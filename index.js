@@ -71,7 +71,7 @@ async function sendAndFinalize(tx, signer) {
 }
 
 // Used to get all staker accounts participating in dApps staking v2.
-const getAllStakers = async () => {
+async function  getAllStakers () {
   console.log("Preparing API used to get all staker accounts.");
   const api = await connectApi();
 
@@ -114,7 +114,7 @@ const getAllStakers = async () => {
 };
 
 // Used to check if the reward destination switch is required in order to execute a reward claim.
-const isRewardSwitchRequired = (api, stakerInfo, stakerLedger, currentEra) => {
+function isRewardSwitchRequired(api, stakerInfo, stakerLedger, currentEra) {
   if (stakerLedger.reward_destination == "FreeBalance") {
     return false;
   }
@@ -132,14 +132,14 @@ const isRewardSwitchRequired = (api, stakerInfo, stakerLedger, currentEra) => {
 };
 
 // Returns an array of calls that are needed to claim all rewards for the given staker's stake on the provided smart contract.
-const getRewardClaimCalls = (
+function getRewardClaimCalls(
   api,
   stakerAccount,
   stakerLedger,
   smartContract,
   stakerInfo,
   currentEra
-) => {
+) {
   let calls = [];
   let startIndex = 0;
 
@@ -237,9 +237,37 @@ const delegated_claiming = async () => {
   }
 };
 
+async function migrate_dapp_staking() {  
+  console.log("Preparing API...");
+  const api = await connectApi();
+
+  console.log("Getting account...");
+  const account = await getAccount(api);
+
+  console.log("Starting with migration.")
+
+  let steps = 0;
+  let migration_state = await api.query.dappStakingMigration.migrationStateStorage();
+  console.log("Init migration state:", migration_state.toJSON());
+  while (!migration_state.isFinished) {
+    steps++;
+    console.log("Executing step #", steps);
+    const tx = api.tx.dappStakingMigration.migrate(null);
+    const submitResult = await sendAndFinalize(tx, account);
+
+    if (!submitResult.success) {
+      throw "This shouldn't happen, since Tx must succeed, eventually. If it does happen, fix the bug!";
+    }
+    migration_state = await api.query.dappStakingMigration.migrationStateStorage();
+  }
+
+  console.log("Migration finished. It took", steps, "steps.");
+};
+
 const run = async () => {
   //   await getAllStakers();
   await delegated_claiming();
+  // await migrate_dapp_staking();
   process.exit();
 };
 
