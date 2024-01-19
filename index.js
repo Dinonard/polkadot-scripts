@@ -1,16 +1,15 @@
 const { ApiPromise, WsProvider, Keyring } = require("@polkadot/api");
 const { KeyringPair } = require("@polkadot/keyring/types");
 const { BN } = require("bn.js");
-const { encodeAddress, isEthereumAddress } = require("@polkadot/util-crypto");
+const { encodeAddress } = require("@polkadot/util-crypto");
 const fs = require("fs");
-
-const ENDPOINT = "ws://127.0.0.1:9944";
+const yargs = require("yargs");
 
 // Can be adjusted, depending on how large the calls end up being.
 const BATCH_SIZE_LIMIT = 100;
 
-const connectApi = async () => {
-  const wsProvider = new WsProvider(ENDPOINT);
+async function connectApi(endpoint) {
+  const wsProvider = new WsProvider(endpoint);
   const api = await ApiPromise.create({ provider: wsProvider });
 
   return api;
@@ -71,9 +70,9 @@ async function sendAndFinalize(tx, signer) {
 }
 
 // Used to get all staker accounts participating in dApps staking v2.
-async function  getAllStakers () {
+async function getAllStakers(args) {
   console.log("Preparing API used to get all staker accounts.");
-  const api = await connectApi();
+  const api = await connectApi(args.endpoint);
 
   const pageSize = 1000;
 
@@ -189,9 +188,9 @@ function getRewardClaimCalls(
 };
 
 // Execute delegated claim for all staker accounts.
-const delegated_claiming = async () => {
+async function delegatedClaiming(args) {
   console.log("Preparing API...");
-  const api = await connectApi();
+  const api = await connectApi(args.endpoint);
 
   console.log("Getting signer account");
   const signerAccount = await getAccount(api);
@@ -237,9 +236,9 @@ const delegated_claiming = async () => {
   }
 };
 
-async function migrate_dapp_staking() {  
+async function migrateDappStaking(args) {  
   console.log("Preparing API...");
-  const api = await connectApi();
+  const api = await connectApi(args.endpoint);
 
   console.log("Getting account...");
   const account = await getAccount(api);
@@ -264,14 +263,50 @@ async function migrate_dapp_staking() {
   console.log("Migration finished. It took", steps, "steps.");
 };
 
-const run = async () => {
-  //   await getAllStakers();
-  await delegated_claiming();
-  // await migrate_dapp_staking();
-  process.exit();
-};
+async function main() {
+	await yargs
+		.options({
+			// global options that apply to each command
+			endpoint: {
+				alias: 'e',
+				description: 'the wss endpoint. It must allow unsafe RPCs.',
+				default: 'ws://127.0.0.1:9944',
+				string: true,
+				demandOption: false,
+				global: true
+			}
+		})
+		.command(
+			['dapp-staking-migration'],
+			'Migrate from dApps staking v2 to dApp staking v3.',
+			{},
+			migrateDappStaking
+		)
+		.command(
+			['fetch-v2-stakers'],
+			'Fetch all dApps staking v2 stakers and store them into a file.',
+			{},
+			getAllStakers
+		)
+		.command(
+			['delegated-claim'],
+			'Execute delegated claim for v2 staker accounts',
+			{},
+			delegatedClaiming
+		)
+		.parse();
+}
 
-run();
+main()
+	.then(() => {
+		console.info('Exiting ...');
+		process.exit(0);
+	})
+	.catch((err) => {
+		console.error(err);
+		process.exit(1);
+	});
+
 
 // const pageSize = 1;
 // let entry = await api.query.dappsStaking.generalStakerInfo.entriesPaged({
