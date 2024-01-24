@@ -31,7 +31,7 @@ async function getAccount(api) {
   }
 }
 
-async function sendAndFinalize(tx, signer) {
+async function sendAndFinalize(tx, signer, waitForFinalization = true) {
   return new Promise((resolve) => {
     let success = false;
     let included = [];
@@ -50,6 +50,9 @@ async function sendAndFinalize(tx, signer) {
             `📀 Transaction ${tx.meta.name}(..) included at blockHash ${status.asInBlock} [success = ${success}]`
           );
           included = [...events];
+          if (!waitForFinalization) {
+            resolve({ success, hash, included, finalized });
+          }
         } else if (status.isBroadcast) {
           console.log(`🚀 Transaction broadcasted.`);
         } else if (status.isFinalized) {
