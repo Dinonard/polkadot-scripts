@@ -192,7 +192,8 @@ function getRewardClaimCalls(
 async function sendBatch(api, calls, signerAccount) {
   // Once all calls are ready, split them into batches and execute them.
   for (let idx = 0; idx < calls.length; idx += BATCH_SIZE_LIMIT) {
-    const batchCall = api.tx.utility.batchAll(calls.slice(idx, idx + BATCH_SIZE_LIMIT));
+    // Don't use atomic batch since even if an error occurs with some call, it's better for script to keep on running.
+    const batchCall = api.tx.utility.batch(calls.slice(idx, idx + BATCH_SIZE_LIMIT));
     const submitResult = await sendAndFinalize(batchCall, signerAccount);
     if (!submitResult.success) {
       console.log(`Claiming failed for ${stakerAccount}.`);
