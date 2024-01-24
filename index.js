@@ -6,7 +6,7 @@ const fs = require("fs");
 const yargs = require("yargs");
 
 // Can be adjusted, depending on how large the calls end up being.
-const BATCH_SIZE_LIMIT = 100;
+const BATCH_SIZE_LIMIT = 500;
 
 async function connectApi(endpoint) {
   const wsProvider = new WsProvider(endpoint);
@@ -122,7 +122,7 @@ function isRewardSwitchRequired(api, stakerInfo, stakerLedger, currentEra) {
   const MAX_ERA_STAKE_VALUES = api.consts.dappsStaking.maxEraStakeValues;
 
   const overflowOfEraStakeValuesExpected =
-  stakerInfo.stakes.length == MAX_ERA_STAKE_VALUES &&
+    stakerInfo.stakes.length == MAX_ERA_STAKE_VALUES &&
     (stakerInfo.stakes[0].era.toNumber() + 1) <
     stakerInfo.stakes[1].era.toNumber() &&
     stakerInfo.stakes[MAX_ERA_STAKE_VALUES - 1].era.toNumber() != currentEra;
@@ -137,14 +137,15 @@ function getRewardClaimCalls(
   stakerLedger,
   smartContract,
   stakerInfo,
-  currentEra
+  currentEra,
+  dummyCalls,
 ) {
   let calls = [];
   let startIndex = 0;
 
   if (isRewardSwitchRequired(api, stakerInfo, stakerLedger)) {
     // 1. Switch to FreeBalance
-    const setFreeBalanceTx = api.tx.dappsStaking.setRewardDestinationFor(
+    const setFreeBalanceTx = dummyCalls ? api.tx.dappsStaking.claimStaker(smartContract) : api.tx.dappsStaking.setRewardDestinationFor(
       stakerAccount,
       "FreeBalance"
     );
@@ -152,12 +153,12 @@ function getRewardClaimCalls(
 
     // 2. Claim rewards until the number of era stake value gets reduced
     for (let inner_claim_era = stakerInfo.stakes[0].era; inner_claim_era < stakerInfo.stakes[1].era; inner_claim_era++) {
-      const tx = api.tx.dappsStaking.claimStakerFor(stakerAccount, smartContract);
+      const tx = dummyCalls ? api.tx.dappsStaking.claimStaker(smartContract) : api.tx.dappsStaking.claimStakerFor(stakerAccount, smartContract);
       calls.push(tx);
     }
 
     // 3. Switch back to StakeBalance
-    const setStakeBalanceTx = api.tx.dappsStaking.setRewardDestinationFor(
+    const setStakeBalanceTx = dummyCalls ? api.tx.dappsStaking.claimStaker(smartContract) : api.tx.dappsStaking.setRewardDestinationFor(
       stakerAccount,
       "StakeBalance"
     );
@@ -179,13 +180,26 @@ function getRewardClaimCalls(
     const firstEra = stakeEntry.era;
     const endEra = (entryIndex == stakerInfo.stakes.length - 1) ? currentEra : stakerInfo.stakes[entryIndex + 1].era;
     for (let i = firstEra; i < endEra; i++) {
-      const tx = api.tx.dappsStaking.claimStakerFor(stakerAccount, smartContract);
+      const tx = dummyCalls ? api.tx.dappsStaking.claimStaker(smartContract) : api.tx.dappsStaking.claimStakerFor(stakerAccount, smartContract);
       calls.push(tx);
     }
   }
 
   return calls;
 };
+
+// TODO
+async function sendBatch(api, calls, signerAccount) {
+  // Once all calls are ready, split them into batches and execute them.
+  for (let idx = 0; idx < calls.length; idx += BATCH_SIZE_LIMIT) {
+    const batchCall = api.tx.utility.batchAll(calls.slice(idx, idx + BATCH_SIZE_LIMIT));
+    const submitResult = await sendAndFinalize(batchCall, signerAccount);
+    if (!submitResult.success) {
+      console.log(`Claiming failed for ${stakerAccount}.`);
+      throw "This shouldn't happen, but if it does, fix the bug or try restarting the script!";
+    }
+  }
+}
 
 // Execute delegated claim for all staker accounts.
 async function delegatedClaiming(args) {
@@ -205,6 +219,12 @@ async function delegatedClaiming(args) {
   );
   console.log("Loaded ", stakerAccounts.length, " staker accounts.");
 
+  let calls = [];
+  let totalCallsCounter = 0;
+
+  stakersCallsMap = {};
+
+  // TODO: check if we can do `Promise.all` approach here to fetch all data in less RPC calls. This could speed up the whole process A LOT!
   // Process each staker account, ensure that all pending rewards are claimed.
   for (const stakerAccount of stakerAccounts) {
     // Acquire structs related to the staker account.
@@ -213,30 +233,42 @@ async function delegatedClaiming(args) {
       api.query.dappsStaking.ledger(stakerAccount)
     ]);
 
-    let innerCalls = [];
+    let stakerCallsCounter = 0;
 
     // For each smart contract stake, prepare calls to claim all pending rewards.
     stakerInfos.forEach(([key, stakerInfo]) => {
       const smartContract = key.args[1];
 
-      const calls = getRewardClaimCalls(api, stakerAccount, stakerLedger, smartContract, stakerInfo, currentEra);
+      const innerCalls = getRewardClaimCalls(api, stakerAccount, stakerLedger, smartContract, stakerInfo, currentEra, args.dummy);
+      stakerCallsCounter += innerCalls.length;
 
-      innerCalls.push(...calls);
+      calls.push(...innerCalls);
     });
 
-    // Once all calls are ready, split them into batches and execute them.
-    for (let idx = 0; idx < innerCalls.length; idx += BATCH_SIZE_LIMIT) {
-      const batchCall = api.tx.utility.batchAll(innerCalls.slice(idx, idx + BATCH_SIZE_LIMIT));
-      const submitResult = await sendAndFinalize(batchCall, signerAccount);
-      if (!submitResult.success) {
-        console.log(`Claiming failed for ${stakerAccount}.`);
-        throw "This shouldn't happen, but if it does, fix the bug!";
-      }
+    totalCallsCounter += stakerCallsCounter;
+    stakersCallsMap[stakerAccount] = stakerCallsCounter;
+
+    // Once we accumulate enough calls, send them.
+    if (calls.length >= BATCH_SIZE_LIMIT && !args.dummy) {
+      await sendBatch(api, calls, signerAccount);
+      calls = [];
+    } else {
+      calls = [];
     }
   }
+
+  // In case there are some calls left, send them as well.
+  if (calls.length > 0 && !args.dummy) {
+    await sendBatch(api, calls, signerAccount);
+  }
+
+  const data = JSON.stringify(stakersCallsMap, null, 4);
+  fs.writeFileSync("unclaimedCalls.json", data);
+
+  console.log("Delegated claiming finished. Total number of calls:", totalCallsCounter);
 };
 
-async function migrateDappStaking(args) {  
+async function migrateDappStaking(args) {
   console.log("Preparing API...");
   const api = await connectApi(args.endpoint);
 
@@ -264,48 +296,57 @@ async function migrateDappStaking(args) {
 };
 
 async function main() {
-	await yargs
-		.options({
-			// global options that apply to each command
-			endpoint: {
-				alias: 'e',
-				description: 'the wss endpoint. It must allow unsafe RPCs.',
-				default: 'ws://127.0.0.1:9944',
-				string: true,
-				demandOption: false,
-				global: true
-			}
-		})
-		.command(
-			['dapp-staking-migration'],
-			'Migrate from dApps staking v2 to dApp staking v3.',
-			{},
-			migrateDappStaking
-		)
-		.command(
-			['fetch-v2-stakers'],
-			'Fetch all dApps staking v2 stakers and store them into a file.',
-			{},
-			getAllStakers
-		)
-		.command(
-			['delegated-claim'],
-			'Execute delegated claim for v2 staker accounts',
-			{},
-			delegatedClaiming
-		)
-		.parse();
+  await yargs
+    .options({
+      // global options that apply to each command
+      endpoint: {
+        alias: 'e',
+        description: 'the wss endpoint. It must allow unsafe RPCs.',
+        default: 'ws://127.0.0.1:9944',
+        string: true,
+        demandOption: false,
+        global: true
+      }
+    })
+    .command(
+      ['dapp-staking-migration'],
+      'Migrate from dApps staking v2 to dApp staking v3.',
+      {},
+      migrateDappStaking
+    )
+    .command(
+      ['fetch-v2-stakers'],
+      'Fetch all dApps staking v2 stakers and store them into a file.',
+      {},
+      getAllStakers
+    )
+    .command(
+      ['delegated-claim'],
+      'Execute delegated claim for v2 staker accounts',
+      (yargs) => {
+				return yargs.options({
+					dummy: {
+						alias: 'd',
+						description: 'If set, the script will not send any transactions, but will only print the number of calls that would be executed.',
+						demandOption: false,
+            flag: true,
+					}
+				});
+			},
+      delegatedClaiming
+    )
+    .parse();
 }
 
 main()
-	.then(() => {
-		console.info('Exiting ...');
-		process.exit(0);
-	})
-	.catch((err) => {
-		console.error(err);
-		process.exit(1);
-	});
+  .then(() => {
+    console.info('Exiting ...');
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 
 
 // const pageSize = 1;
