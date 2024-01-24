@@ -6,7 +6,7 @@ const fs = require("fs");
 const yargs = require("yargs");
 
 // Can be adjusted, depending on how large the calls end up being.
-const BATCH_SIZE_LIMIT = 500;
+const BATCH_SIZE_LIMIT = 100;
 
 async function connectApi(endpoint) {
   const wsProvider = new WsProvider(endpoint);
@@ -224,15 +224,32 @@ async function delegatedClaiming(args) {
 
   stakersCallsMap = {};
 
-  // TODO: check if we can do `Promise.all` approach here to fetch all data in less RPC calls. This could speed up the whole process A LOT!
-  // Process each staker account, ensure that all pending rewards are claimed.
-  for (const stakerAccount of stakerAccounts) {
-    // Acquire structs related to the staker account.
-    const [stakerInfos, stakerLedger] = await Promise.all([
-      api.query.dappsStaking.generalStakerInfo.entries(stakerAccount),
-      api.query.dappsStaking.ledger(stakerAccount)
-    ]);
+  const FETCH_BATCH_SIZE = 100;
 
+  // Function to process a batch of staker accounts
+  async function processFetchBatch(stakerAccounts) {
+    const promises = stakerAccounts.map(stakerAccount => {
+      return Promise.all([
+        api.query.dappsStaking.generalStakerInfo.entries(stakerAccount),
+        api.query.dappsStaking.ledger(stakerAccount)
+      ]).then(([stakerInfos, stakerLedger]) => {
+        return [stakerAccount, stakerInfos, stakerLedger];
+      });
+    });
+
+    return await Promise.all(promises);
+  }
+
+  // Process all staker accounts in batches
+  const results = [];
+  for (let i = 0; i < stakerAccounts.length; i += FETCH_BATCH_SIZE) {
+    const batch = stakerAccounts.slice(i, i + FETCH_BATCH_SIZE);
+    const batchResults = await processFetchBatch(batch);
+    results.push(...batchResults);
+    console.log("Fetched data for {} staker accounts.", results.length);
+  }
+
+  for (const [stakerAccount, stakerInfos, stakerLedger] of results) {
     let stakerCallsCounter = 0;
 
     // For each smart contract stake, prepare calls to claim all pending rewards.
@@ -246,7 +263,10 @@ async function delegatedClaiming(args) {
     });
 
     totalCallsCounter += stakerCallsCounter;
-    stakersCallsMap[stakerAccount] = stakerCallsCounter;
+    stakersCallsMap[stakerAccount] = {
+      'numberOfCalls': stakerCallsCounter,
+      'stakedAmount': (stakerLedger.locked.toBigInt() / BigInt(1e18)).toString()
+    };
 
     // Once we accumulate enough calls, send them.
     if (calls.length >= BATCH_SIZE_LIMIT && !args.dummy) {
@@ -324,15 +344,15 @@ async function main() {
       ['delegated-claim'],
       'Execute delegated claim for v2 staker accounts',
       (yargs) => {
-				return yargs.options({
-					dummy: {
-						alias: 'd',
-						description: 'If set, the script will not send any transactions, but will only print the number of calls that would be executed.',
-						demandOption: false,
+        return yargs.options({
+          dummy: {
+            alias: 'd',
+            description: 'If set, the script will not send any transactions, but will only print the number of calls that would be executed.',
+            demandOption: false,
             flag: true,
-					}
-				});
-			},
+          }
+        });
+      },
       delegatedClaiming
     )
     .parse();
