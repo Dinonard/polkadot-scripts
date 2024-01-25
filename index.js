@@ -6,8 +6,13 @@ const fs = require("fs");
 const yargs = require("yargs");
 
 // Can be adjusted, depending on how large the calls end up being.
-const BATCH_SIZE_LIMIT = 100;
+const BATCH_SIZE_LIMIT = 200;
 
+/**
+ * Used to establish a connection to the API
+ *
+ * @param {string} endpoint - The WebSocket endpoint to connect to.
+ */
 async function connectApi(endpoint) {
   const wsProvider = new WsProvider(endpoint);
   const api = await ApiPromise.create({ provider: wsProvider });
@@ -15,6 +20,11 @@ async function connectApi(endpoint) {
   return api;
 };
 
+/**
+ * Used to create a new account from a seed. If no seed is provided, it defaults to using Alice.
+ *
+ * @returns {KeyringPair} A keyring pair representing the created account.
+ */
 async function getAccount(api) {
   const keyring = new Keyring({
     type: "sr25519",
@@ -31,6 +41,15 @@ async function getAccount(api) {
   }
 }
 
+/**
+ * This function sends a transaction and waits for it to be included in a block or finalized, depending on the `waitForFinalization` parameter.
+ *
+ * @param {Extrinsic} tx - The transaction to send.
+ * @param {KeyringPair} signer - The account to sign the transaction with.
+ * @param {boolean} [waitForFinalization=true] - Whether to wait for the transaction to be finalized before resolving the promise.
+ *                                               If false, the promise is resolved as soon as the transaction is included in a block.
+ * @returns {Promise<Object>} A promise that resolves to an object containing the success status, the block hash, and the events included and finalized.
+ */
 async function sendAndFinalize(tx, signer, waitForFinalization = true) {
   return new Promise((resolve) => {
     let success = false;
@@ -72,7 +91,11 @@ async function sendAndFinalize(tx, signer, waitForFinalization = true) {
   });
 }
 
-// Used to get all staker accounts participating in dApps staking v2.
+/**
+ * This function retrieves all staker accounts from a Astar/Shiden/Shibuya network.
+ *
+ * @param {string} args.endpoint - The WebSocket endpoint to connect to.
+ */
 async function getAllStakers(args) {
   console.log("Preparing API used to get all staker accounts.");
   const api = await connectApi(args.endpoint);
@@ -115,7 +138,16 @@ async function getAllStakers(args) {
   fs.writeFileSync("stakerAccounts.json", data);
 };
 
-// Used to check if the reward destination switch is required in order to execute a reward claim.
+/**
+ * This function checks if a reward switch is required for a staker.
+ *
+ * @param {ApiPromise} api - An instance of the API.
+ * @param {Object} stakerInfo - An object containing the staker's information.
+ * @param {Object} stakerLedger - An object containing the staker's ledger.
+ * @param {number} currentEra - The current era.
+ *
+ * @returns {boolean} Returns true if a reward switch is required, false otherwise.
+ */
 function isRewardSwitchRequired(api, stakerInfo, stakerLedger, currentEra) {
   if (stakerLedger.reward_destination == "FreeBalance") {
     return false;
@@ -133,7 +165,20 @@ function isRewardSwitchRequired(api, stakerInfo, stakerLedger, currentEra) {
   return overflowOfEraStakeValuesExpected;
 };
 
-// Returns an array of calls that are needed to claim all rewards for the given staker's stake on the provided smart contract.
+/**
+ * This function returns an array of calls that are needed to claim all rewards for the given staker's stake on the provided smart contract.
+ * NOTE: this can change on blockchain at anytime, since anyone can claim rewards for anyone.
+ *
+ * @param {ApiPromise} api - An instance of the API.
+ * @param {string} stakerAccount - The account of the staker.
+ * @param {Object} stakerLedger - An object containing the staker's ledger.
+ * @param {string} smartContract - The address of the smart contract.
+ * @param {Object} stakerInfo - An object containing the staker's information.
+ * @param {number} currentEra - The current era.
+ * @param {boolean} dummyCalls - A flag indicating whether to generate dummy calls.
+ *
+ * @returns {Array} An array of calls needed to claim all rewards for the staker's stake.
+ */
 function getRewardClaimCalls(
   api,
   stakerAccount,
@@ -191,7 +236,15 @@ function getRewardClaimCalls(
   return calls;
 };
 
-// TODO
+/**
+ * Used to break up calls into limited size batches and submit transactions to the Tx queue..
+ *
+ * @param {ApiPromise} api - An instance of the API.
+ * @param {Array} calls - An array of calls to be sent.
+ * @param {KeyringPair} signerAccount - The account to sign the transactions with.
+ *
+ * @throws Will throw an error if a batch of calls fails to be finalized.
+ */
 async function sendBatch(api, calls, signerAccount) {
   // Once all calls are ready, split them into batches and execute them.
   for (let idx = 0; idx < calls.length; idx += BATCH_SIZE_LIMIT) {
@@ -205,7 +258,15 @@ async function sendBatch(api, calls, signerAccount) {
   }
 }
 
-// Execute delegated claim for all staker accounts.
+/**
+ * This function executes delegated claiming for all staker accounts.
+ *
+ * @param {Object} args - An object containing the endpoint to connect to and a dummy flag.
+ * @param {string} args.endpoint - The WebSocket endpoint to connect to.
+ * @param {boolean} args.dummy - A flag indicating whether to generate dummy calls.
+ *
+ * @throws Will throw an error if a batch of calls fails to be included or finalized.
+ */
 async function delegatedClaiming(args) {
   console.log("Preparing API...");
   const api = await connectApi(args.endpoint);
@@ -292,6 +353,15 @@ async function delegatedClaiming(args) {
   console.log("Delegated claiming finished. Total number of calls:", totalCallsCounter);
 };
 
+/**
+ * This function migrates the dapp staking.
+ *
+ * @param {string} args.endpoint - The WebSocket endpoint to connect to.
+ *
+ * @returns {Promise<void>} A promise that resolves when the migration is finished.
+ *
+ * @throws Will throw an error if a transaction fails to be finalized.
+ */
 async function migrateDappStaking(args) {
   console.log("Preparing API...");
   const api = await connectApi(args.endpoint);
