@@ -50,14 +50,11 @@ async function getAccount(api) {
  *                                               If false, the promise is resolved as soon as the transaction is included in a block.
  * @returns {Promise<Object>} A promise that resolves to an object containing the success status, the block hash, and the events included and finalized.
  */
-async function sendAndFinalize(tx, signer, waitForFinalization = true) {
+async function sendAndFinalize(tx, signer, tip, waitForFinalization = false) {
   return new Promise((resolve) => {
     let success = false;
     let included = [];
     let finalized = [];
-
-    // Should be enough to get in front of the queue
-    const tip = new BN(1_000_000_000_000_000);
 
     tx.signAndSend(
       signer,
@@ -69,6 +66,7 @@ async function sendAndFinalize(tx, signer, waitForFinalization = true) {
             `📀 Transaction ${tx.meta.name}(..) included at blockHash ${status.asInBlock} [success = ${success}]`
           );
           included = [...events];
+          const hash = status.hash;
           if (!waitForFinalization) {
             resolve({ success, hash, included, finalized });
           }
@@ -82,7 +80,7 @@ async function sendAndFinalize(tx, signer, waitForFinalization = true) {
           const hash = status.hash;
           resolve({ success, hash, included, finalized });
         } else if (status.isReady) {
-          // let's not be too noisy..
+          // ...
         } else {
           console.log(`🤷 Other status ${status}`);
         }
@@ -135,7 +133,7 @@ async function getAllStakers(args) {
   console.log("Total number of staker accounts: ", stakerAccounts.length);
 
   const data = JSON.stringify(stakerAccounts);
-  fs.writeFileSync("stakerAccounts.json", data);
+  fs.writeFileSync(args.path, data);
 };
 
 /**
@@ -225,8 +223,8 @@ function getRewardClaimCalls(
     }
 
     // Prepare claim calls for each era in the 'span'.
-    const firstEra = stakeEntry.era;
-    const endEra = (entryIndex == stakerInfo.stakes.length - 1) ? currentEra : stakerInfo.stakes[entryIndex + 1].era;
+    const firstEra = parseInt(stakeEntry.era);
+    const endEra = parseInt((entryIndex == stakerInfo.stakes.length - 1) ? currentEra : stakerInfo.stakes[entryIndex + 1].era);
     for (let i = firstEra; i < endEra; i++) {
       const tx = dummyCalls ? api.tx.dappsStaking.claimStaker(smartContract) : api.tx.dappsStaking.claimStakerFor(stakerAccount, smartContract);
       calls.push(tx);
@@ -245,12 +243,12 @@ function getRewardClaimCalls(
  *
  * @throws Will throw an error if a batch of calls fails to be finalized.
  */
-async function sendBatch(api, calls, signerAccount) {
+async function sendBatch(api, calls, signerAccount, tip) {
   // Once all calls are ready, split them into batches and execute them.
   for (let idx = 0; idx < calls.length; idx += BATCH_SIZE_LIMIT) {
     // Don't use atomic batch since even if an error occurs with some call, it's better for script to keep on running.
     const batchCall = api.tx.utility.batch(calls.slice(idx, idx + BATCH_SIZE_LIMIT));
-    const submitResult = await sendAndFinalize(batchCall, signerAccount);
+    const submitResult = await sendAndFinalize(batchCall, signerAccount, tip);
     if (!submitResult.success) {
       console.log(`Claiming failed for ${stakerAccount}.`);
       throw "This shouldn't happen, but if it does, fix the bug or try restarting the script!";
@@ -279,8 +277,11 @@ async function delegatedClaiming(args) {
   const currentEra = await api.query.dappsStaking.currentEra();
   console.log("Anchored at era", currentEra.toString());
 
+  const tip = new BN(args.tip);
+  console.log("Tip set to", tip.toString(), ".");
+
   let stakerAccounts = JSON.parse(
-    fs.readFileSync("stakerAccounts.json", "utf8")
+    fs.readFileSync(args.path, "utf8")
   );
   console.log("Loaded ", stakerAccounts.length, " staker accounts.");
 
@@ -335,7 +336,7 @@ async function delegatedClaiming(args) {
 
     // Once we accumulate enough calls, send them.
     if (calls.length >= BATCH_SIZE_LIMIT && !args.dummy) {
-      await sendBatch(api, calls, signerAccount);
+      await sendBatch(api, calls, signerAccount, tip);
       calls = [];
     } else {
       calls = [];
@@ -344,7 +345,7 @@ async function delegatedClaiming(args) {
 
   // In case there are some calls left, send them as well.
   if (calls.length > 0 && !args.dummy) {
-    await sendBatch(api, calls, signerAccount);
+    await sendBatch(api, calls, signerAccount, tip);
   }
 
   const data = JSON.stringify(stakersCallsMap, null, 4);
@@ -369,6 +370,9 @@ async function migrateDappStaking(args) {
   console.log("Getting account...");
   const account = await getAccount(api);
 
+  const tip = new BN(args.tip);
+  console.log("Tip set to", tip.toString(), ".");
+
   console.log("Starting with migration.")
 
   let steps = 0;
@@ -378,7 +382,7 @@ async function migrateDappStaking(args) {
     steps++;
     console.log("Executing step #", steps);
     const tx = api.tx.dappStakingMigration.migrate(null);
-    const submitResult = await sendAndFinalize(tx, account);
+    const submitResult = await sendAndFinalize(tx, account, tip);
 
     if (!submitResult.success) {
       throw "This shouldn't happen, since Tx must succeed, eventually. If it does happen, fix the bug!";
@@ -400,7 +404,22 @@ async function main() {
         string: true,
         demandOption: false,
         global: true
-      }
+      },
+      tip: {
+        alias: 't',
+        description: 'How much to tip each transaction.',
+        default: 0,
+        number: true,
+        demandOption: false,
+        global: true
+      },
+      finalize: {
+        alias: 'f',
+        description: 'Wait for transaction to be finalized, or treat block inclusion as success.',
+        demandOption: false,
+        boolean: true,
+        default: true,
+      },
     })
     .command(
       ['dapp-staking-migration'],
@@ -411,7 +430,17 @@ async function main() {
     .command(
       ['fetch-v2-stakers'],
       'Fetch all dApps staking v2 stakers and store them into a file.',
-      {},
+      (yargs) => {
+        return yargs.options({
+          path: {
+            alias: 'p',
+            description: 'Path to file where to store the staker accounts.',
+            demandOption: false,
+            string: true,
+            default: 'stakerAccounts.json'
+          }
+        });
+      },
       getAllStakers
     )
     .command(
@@ -424,6 +453,13 @@ async function main() {
             description: 'If set, the script will not send any transactions, but will only print the number of calls that would be executed.',
             demandOption: false,
             flag: true,
+          },
+          path: {
+            alias: 'p',
+            description: 'Path to file from which to load staker accounts.',
+            demandOption: false,
+            string: true,
+            default: 'stakerAccounts.json'
           }
         });
       },
