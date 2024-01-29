@@ -81,6 +81,10 @@ async function sendAndFinalize(tx, signer, options, waitForFinalization = false)
           resolve({ success, hash, included, finalized });
         } else if (status.isReady) {
           // ...
+        } else if (status.isInvalid) {
+          console.log(`🚫 Transaction ${tx.meta.name}(..) invalid`);
+          success = false;
+          resolve({ success, included, finalized });
         } else {
           console.log(`🤷 Other status ${status.toString()}`);
         }
@@ -275,7 +279,8 @@ async function sendBatch(api, calls, signerAccount, tip) {
     promises.push(sendAndFinalize(batchCall, signerAccount, { tip, nonce }));
 
     // Add delay after each transaction to avoid nonce collision.
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // No guarantee for this to work, maybe it can be optimized to be better.
+    await new Promise(resolve => setTimeout(resolve, 5000));
 
     nonce++;
   }
@@ -359,7 +364,7 @@ async function delegatedClaiming(args) {
     };
 
     // Once we accumulate enough calls, send them.
-    if (calls.length >= BATCH_SIZE_LIMIT * 3 && !args.dummy) {
+    if (calls.length >= BATCH_SIZE_LIMIT * 10 && !args.dummy) {
       await sendBatch(api, calls, signerAccount, tip);
       calls = [];
     } else {

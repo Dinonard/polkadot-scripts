@@ -12,3 +12,7 @@ If no account is specified as signed, by default `Alice` is used.
 
 Seed phrase can be provided via environment variable:
 - `SEED="..." yarn start ...`
+
+## Delegated Claim
+
+`yarn start -e ws://127.0.0.1:8000 -t 10000000000000000 delegated-claim -p stakerAccounts.json -m 500`
