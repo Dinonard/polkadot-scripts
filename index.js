@@ -6,7 +6,7 @@ const fs = require("fs");
 const yargs = require("yargs");
 
 // Can be adjusted, depending on how large the calls end up being.
-const BATCH_SIZE_LIMIT = 200;
+const BATCH_SIZE_LIMIT = 100;
 
 /**
  * Used to establish a connection to the API
@@ -50,7 +50,7 @@ async function getAccount(api) {
  *                                               If false, the promise is resolved as soon as the transaction is included in a block.
  * @returns {Promise<Object>} A promise that resolves to an object containing the success status, the block hash, and the events included and finalized.
  */
-async function sendAndFinalize(tx, signer, tip, waitForFinalization = false) {
+async function sendAndFinalize(tx, signer, options, waitForFinalization = false) {
   return new Promise((resolve) => {
     let success = false;
     let included = [];
@@ -58,7 +58,7 @@ async function sendAndFinalize(tx, signer, tip, waitForFinalization = false) {
 
     tx.signAndSend(
       signer,
-      { tip },
+      options,
       ({ events = [], status, dispatchError }) => {
         if (status.isInBlock) {
           success = dispatchError ? false : true;
@@ -82,7 +82,7 @@ async function sendAndFinalize(tx, signer, tip, waitForFinalization = false) {
         } else if (status.isReady) {
           // ...
         } else {
-          console.log(`🤷 Other status ${status}`);
+          console.log(`🤷 Other status ${status.toString()}`);
         }
       }
     );
@@ -134,6 +134,26 @@ async function getAllStakers(args) {
 
   const data = JSON.stringify(stakerAccounts);
   fs.writeFileSync(args.path, data);
+};
+
+
+/**
+ * Get the limit era for reward claiming (exclusive) for the specified smart contract.
+ */
+async function getLimitEra(api, smartContract, currentEra, limitErasPerContract) {
+  // If the limit era for this smart contract has not been fetched yet
+  if (!limitErasPerContract[smartContract]) {
+    const maybeDAppInfo = await api.query.dappsStaking.registeredDapps(smartContract);
+
+    if (maybeDAppInfo.isNone) {
+      console.log("This shouldn't happen, since we are only iterating over dApps which exist in storage.");
+    }
+    const dAppInfo = maybeDAppInfo.unwrap();
+
+    limitErasPerContract[smartContract] = dAppInfo.state.hasOwnProperty('unregistered') ? dAppInfo.state.unregistered.toInteger() : currentEra;
+  }
+
+  return limitErasPerContract[smartContract];
 };
 
 /**
@@ -244,13 +264,27 @@ function getRewardClaimCalls(
  * @throws Will throw an error if a batch of calls fails to be finalized.
  */
 async function sendBatch(api, calls, signerAccount, tip) {
+  // Need to set the nonce manually, since we are sending multiple transactions.
+  let nonce = await api.rpc.system.accountNextIndex(signerAccount.address);
+
   // Once all calls are ready, split them into batches and execute them.
+  const promises = [];
   for (let idx = 0; idx < calls.length; idx += BATCH_SIZE_LIMIT) {
     // Don't use atomic batch since even if an error occurs with some call, it's better for script to keep on running.
     const batchCall = api.tx.utility.batch(calls.slice(idx, idx + BATCH_SIZE_LIMIT));
-    const submitResult = await sendAndFinalize(batchCall, signerAccount, tip);
-    if (!submitResult.success) {
-      console.log(`Claiming failed for ${stakerAccount}.`);
+    promises.push(sendAndFinalize(batchCall, signerAccount, { tip, nonce }));
+
+    // Add delay after each transaction to avoid nonce collision.
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    nonce++;
+  }
+
+  const results = await Promise.all(promises);
+
+  for (const result of results) {
+    if (!result.success) {
+      console.log(`Claiming failed for ${signerAccount}.`);
       throw "This shouldn't happen, but if it does, fix the bug or try restarting the script!";
     }
   }
@@ -280,52 +314,42 @@ async function delegatedClaiming(args) {
   const tip = new BN(args.tip);
   console.log("Tip set to", tip.toString(), ".");
 
+  const minimumUnclaimedEras = args.minimumUnclaimedEras;
+  console.log("Minimum unclaimed eras set to", minimumUnclaimedEras, ".")
+
   let stakerAccounts = JSON.parse(
     fs.readFileSync(args.path, "utf8")
   );
   console.log("Loaded ", stakerAccounts.length, " staker accounts.");
 
   let calls = [];
+
   let totalCallsCounter = 0;
+  let stakersCallsMap = {};
+  const limitErasPerContract = {};
 
-  stakersCallsMap = {};
+  for (const stakerAccount of stakerAccounts) {
+    const [stakerInfos, stakerLedger] = await Promise.all([
+      api.query.dappsStaking.generalStakerInfo.entries(stakerAccount),
+      api.query.dappsStaking.ledger(stakerAccount)
+    ]);
 
-  const FETCH_BATCH_SIZE = 100;
-
-  // Function to process a batch of staker accounts
-  async function processFetchBatch(stakerAccounts) {
-    const promises = stakerAccounts.map(stakerAccount => {
-      return Promise.all([
-        api.query.dappsStaking.generalStakerInfo.entries(stakerAccount),
-        api.query.dappsStaking.ledger(stakerAccount)
-      ]).then(([stakerInfos, stakerLedger]) => {
-        return [stakerAccount, stakerInfos, stakerLedger];
-      });
-    });
-
-    return await Promise.all(promises);
-  }
-
-  // Process all staker accounts in batches
-  const results = [];
-  for (let i = 0; i < stakerAccounts.length; i += FETCH_BATCH_SIZE) {
-    const batch = stakerAccounts.slice(i, i + FETCH_BATCH_SIZE);
-    const batchResults = await processFetchBatch(batch);
-    results.push(...batchResults);
-    console.log("Fetched data for {} staker accounts.", results.length);
-  }
-
-  for (const [stakerAccount, stakerInfos, stakerLedger] of results) {
     let stakerCallsCounter = 0;
 
     // For each smart contract stake, prepare calls to claim all pending rewards.
     stakerInfos.forEach(([key, stakerInfo]) => {
       const smartContract = key.args[1];
 
-      const innerCalls = getRewardClaimCalls(api, stakerAccount, stakerLedger, smartContract, stakerInfo, currentEra, args.dummy);
+      const limitEra = getLimitEra(api, smartContract, currentEra, limitErasPerContract);
+
+      const innerCalls = getRewardClaimCalls(api, stakerAccount, stakerLedger, smartContract, stakerInfo, limitEra, args.dummy);
       stakerCallsCounter += innerCalls.length;
 
-      calls.push(...innerCalls);
+      // Only add calls if there are enough unclaimed eras.
+      // This will be used to initially target stakers with large amount of unclaimed eras.
+      if (innerCalls.length > minimumUnclaimedEras) {
+        calls.push(...innerCalls);
+      }
     });
 
     totalCallsCounter += stakerCallsCounter;
@@ -335,7 +359,7 @@ async function delegatedClaiming(args) {
     };
 
     // Once we accumulate enough calls, send them.
-    if (calls.length >= BATCH_SIZE_LIMIT && !args.dummy) {
+    if (calls.length >= BATCH_SIZE_LIMIT * 3 && !args.dummy) {
       await sendBatch(api, calls, signerAccount, tip);
       calls = [];
     } else {
@@ -368,7 +392,7 @@ async function migrateDappStaking(args) {
   const api = await connectApi(args.endpoint);
 
   console.log("Getting account...");
-  const account = await getAccount(api);
+  const account = getAccount(api);
 
   const tip = new BN(args.tip);
   console.log("Tip set to", tip.toString(), ".");
@@ -382,7 +406,7 @@ async function migrateDappStaking(args) {
     steps++;
     console.log("Executing step #", steps);
     const tx = api.tx.dappStakingMigration.migrate(null);
-    const submitResult = await sendAndFinalize(tx, account, tip);
+    const submitResult = await sendAndFinalize(tx, account, { tip });
 
     if (!submitResult.success) {
       throw "This shouldn't happen, since Tx must succeed, eventually. If it does happen, fix the bug!";
@@ -460,6 +484,13 @@ async function main() {
             demandOption: false,
             string: true,
             default: 'stakerAccounts.json'
+          },
+          minimumUnclaimedEras: {
+            alias: 'm',
+            description: 'Minimum amount of unclaimed eras for a staker to be included in the list of stakers to be processed.',
+            demandOption: false,
+            number: true,
+            default: 0
           }
         });
       },
