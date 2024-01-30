@@ -330,6 +330,7 @@ async function delegatedClaiming(args) {
   let calls = [];
 
   let totalCallsCounter = 0;
+  let stakerCounter = 0;
   let stakersCallsMap = {};
   const limitErasPerContract = {};
 
@@ -339,6 +340,7 @@ async function delegatedClaiming(args) {
       api.query.dappsStaking.ledger(stakerAccount)
     ]);
 
+    stakerCounter++;
     let stakerCallsCounter = 0;
 
     // For each smart contract stake, prepare calls to claim all pending rewards.
@@ -369,6 +371,10 @@ async function delegatedClaiming(args) {
       calls = [];
     } else {
       calls = [];
+    }
+
+    if (stakerCounter % 10 == 0) {
+      console.log("Processed", stakerCounter, "stakers.");
     }
   }
 
