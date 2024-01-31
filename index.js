@@ -85,6 +85,10 @@ async function sendAndFinalize(tx, signer, options, waitForFinalization = false)
           console.log(`🚫 Transaction ${tx.meta.name}(..) invalid`);
           success = false;
           resolve({ success, included, finalized });
+        } else if (status.isUsurped) {
+          console.log(`👮 Transaction ${tx.meta.name}(..) usurped`);
+          success = false;
+          resolve({ success, included, finalized });
         } else {
           console.log(`🤷 Other status ${status.toString()}`);
         }
@@ -369,7 +373,7 @@ async function delegatedClaiming(args) {
     if (calls.length >= BATCH_SIZE_LIMIT * 10 && !args.dummy) {
       await sendBatch(api, calls, signerAccount, tip);
       calls = [];
-    } else {
+    } else if (args.dummy) {
       calls = [];
     }
 
