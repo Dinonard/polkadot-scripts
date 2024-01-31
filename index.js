@@ -62,7 +62,7 @@ async function sendAndFinalize(tx, signer, options, waitForFinalization = true) 
     const unsubPromise = tx.signAndSend(
       signer,
       options,
-      async ({ events = [], status, dispatchError }) => {
+      ({ events = [], status, dispatchError }) => {
         if (status.isInBlock) {
           success = dispatchError ? false : true;
           console.log(
