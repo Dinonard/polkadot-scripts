@@ -53,16 +53,16 @@ async function getAccount(api) {
  *                                               If false, the promise is resolved as soon as the transaction is included in a block.
  * @returns {Promise<Object>} A promise that resolves to an object containing the success status, the block hash, and the events included and finalized.
  */
-async function sendAndFinalize(tx, signer, options, waitForFinalization = false) {
+async function sendAndFinalize(tx, signer, options, waitForFinalization = true) {
   return new Promise((resolve) => {
     let success = false;
     let included = [];
     let finalized = [];
 
-    tx.signAndSend(
+    const unsubPromise = tx.signAndSend(
       signer,
       options,
-      ({ events = [], status, dispatchError }) => {
+      async ({ events = [], status, dispatchError }) => {
         if (status.isInBlock) {
           success = dispatchError ? false : true;
           console.log(
@@ -71,7 +71,7 @@ async function sendAndFinalize(tx, signer, options, waitForFinalization = false)
           included = [...events];
           const hash = status.hash;
           if (!waitForFinalization) {
-            resolve({ success, hash, included, finalized });
+            resolve({ success, hash, included, finalized, unsubPromise });
           }
         } else if (status.isBroadcast) {
           console.log(`🚀 Transaction broadcasted.`);
@@ -81,17 +81,17 @@ async function sendAndFinalize(tx, signer, options, waitForFinalization = false)
           );
           finalized = [...events];
           const hash = status.hash;
-          resolve({ success, hash, included, finalized });
+          resolve({ success, hash, included, finalized, unsubPromise });
         } else if (status.isReady) {
           // ...
         } else if (status.isInvalid) {
           console.log(`🚫 Transaction ${tx.meta.name}(..) invalid`);
           success = false;
-          resolve({ success, included, finalized });
+          resolve({ success, included, finalized, unsubPromise });
         } else if (status.isUsurped) {
           console.log(`👮 Transaction ${tx.meta.name}(..) usurped`);
           success = false;
-          resolve({ success, included, finalized });
+          resolve({ success, included, finalized, unsubPromise });
         } else {
           console.log(`🤷 Other status ${status.toString()}`);
         }
@@ -280,10 +280,12 @@ async function sendBatch(api, calls, signerAccount, tip) {
 
   // Once all calls are ready, split them into batches and execute them.
   const promises = [];
+
   for (let idx = 0; idx < calls.length; idx += BATCH_SIZE_LIMIT) {
     // Don't use atomic batch since even if an error occurs with some call, it's better for script to keep on running.
     const batchCall = api.tx.utility.batch(calls.slice(idx, idx + BATCH_SIZE_LIMIT));
-    promises.push(sendAndFinalize(batchCall, signerAccount, { tip, nonce }));
+    const promise = sendAndFinalize(batchCall, signerAccount, { tip, nonce });
+    promises.push(promise);
 
     // Add delay after each transaction to avoid nonce collision.
     // No guarantee for this to work, maybe it can be optimized to be better.
@@ -295,6 +297,12 @@ async function sendBatch(api, calls, signerAccount, tip) {
   const results = await Promise.all(promises);
 
   for (const result of results) {
+    // This ensures we avoid memory leak, by unsubscribing from the event listener.
+    if (result.unsubPromise) {
+      const unsub = await result.unsubPromise;
+      unsub();
+    }
+
     if (!result.success) {
       console.log(`Claiming failed for ${signerAccount}.`);
       throw "This shouldn't happen, but if it does, fix the bug or try restarting the script!";
