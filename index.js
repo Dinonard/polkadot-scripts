@@ -2,7 +2,10 @@ const { ApiPromise, WsProvider, Keyring } = require("@polkadot/api");
 const { KeyringPair } = require("@polkadot/keyring/types");
 const { BN } = require("bn.js");
 const { encodeAddress } = require("@polkadot/util-crypto");
+
 const fs = require("fs");
+const createCsvWriter = require('csv-writer').createObjectCsvWriter;
+
 const yargs = require("yargs");
 
 // Can be adjusted, depending on how large the calls end up being.
@@ -335,8 +338,19 @@ async function delegatedClaiming(args) {
 
   let totalCallsCounter = 0;
   let stakerCounter = 0;
-  let stakersCallsMap = {};
+  let stakersCallsForCsv = [];
   const limitErasPerContract = {};
+
+  // Create a CSV writer
+  const csvWriter = createCsvWriter({
+    path: args.unclaimedCalls,
+    header: [
+      { id: 'stakerAccount', title: 'STAKERACCOUNT' },
+      { id: 'numberOfCalls', title: 'NUMBEROFCALLS' },
+      { id: 'stakedAmount', title: 'STAKEDAMOUNT' },
+    ],
+    fieldDelimiter: ';'
+  });
 
   for (const stakerAccount of stakerAccounts) {
     const [stakerInfos, stakerLedger] = await Promise.all([
@@ -364,10 +378,20 @@ async function delegatedClaiming(args) {
     });
 
     totalCallsCounter += stakerCallsCounter;
-    stakersCallsMap[stakerAccount] = {
-      'numberOfCalls': stakerCallsCounter,
-      'stakedAmount': (stakerLedger.locked.toBigInt() / BigInt(1e18)).toString()
-    };
+
+    stakersCallsForCsv.push({
+      stakerAccount: stakerAccount,
+      numberOfCalls: stakerCallsCounter,
+      stakedAmount: (stakerLedger.locked.toBigInt() / BigInt(1e18)).toString()
+    });
+
+    if (stakersCallsForCsv.length > 1000) {
+      await csvWriter.writeRecords(stakersCallsForCsv)
+        .then(() => {
+          console.log('...Done');
+        });
+      stakersCallsForCsv = [];
+    }
 
     // Once we accumulate enough calls, send them.
     if (calls.length >= BATCH_SIZE_LIMIT * 10 && !args.dummy) {
@@ -382,13 +406,16 @@ async function delegatedClaiming(args) {
     }
   }
 
+  // Make sure everything is written to the CSV file.
+  await csvWriter.writeRecords(stakersCallsForCsv)
+    .then(() => {
+      console.log('...Done');
+    });
+
   // In case there are some calls left, send them as well.
   if (calls.length > 0 && !args.dummy) {
     await sendBatch(api, calls, signerAccount, tip);
   }
-
-  const data = JSON.stringify(stakersCallsMap, null, 4);
-  fs.writeFileSync("unclaimedCalls.json", data);
 
   console.log("Delegated claiming finished. Total number of calls:", totalCallsCounter);
 };
@@ -506,7 +533,14 @@ async function main() {
             demandOption: false,
             number: true,
             default: 0
-          }
+          },
+          unclaimedCalls: {
+            alias: 'u',
+            description: 'Path to file into which unclaimed calls per account should be written.',
+            demandOption: false,
+            string: true,
+            default: 'unclaimedCalls.csv'
+          },
         });
       },
       delegatedClaiming

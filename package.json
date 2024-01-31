@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@polkadot/api": "^10.4.1",
-    "yargs": "^17.6.0"
+    "yargs": "^17.6.0",
+    "csv-writer": "^1.6.0"
   }
 }
