@@ -345,9 +345,9 @@ async function delegatedClaiming(args) {
   const csvWriter = createCsvWriter({
     path: args.unclaimedCalls,
     header: [
-      { id: 'stakerAccount', title: 'STAKERACCOUNT' },
-      { id: 'numberOfCalls', title: 'NUMBEROFCALLS' },
-      { id: 'stakedAmount', title: 'STAKEDAMOUNT' },
+      { id: 'stakerAccount', title: 'Staker Account' },
+      { id: 'numberOfCalls', title: 'Number of Calls' },
+      { id: 'stakedAmount', title: 'Staker Amount (ASTR/SDN)' },
     ],
     fieldDelimiter: ';'
   });
@@ -385,11 +385,8 @@ async function delegatedClaiming(args) {
       stakedAmount: (stakerLedger.locked.toBigInt() / BigInt(1e18)).toString()
     });
 
-    if (stakersCallsForCsv.length > 1000) {
-      await csvWriter.writeRecords(stakersCallsForCsv)
-        .then(() => {
-          console.log('...Done');
-        });
+    if (stakersCallsForCsv.length >= 100) {
+      await csvWriter.writeRecords(stakersCallsForCsv);
       stakersCallsForCsv = [];
     }
 
@@ -409,7 +406,7 @@ async function delegatedClaiming(args) {
   // Make sure everything is written to the CSV file.
   await csvWriter.writeRecords(stakersCallsForCsv)
     .then(() => {
-      console.log('...Done');
+      console.log('Finished writing to CSV file.');
     });
 
   // In case there are some calls left, send them as well.
