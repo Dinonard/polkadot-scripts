@@ -161,7 +161,7 @@ async function getLimitEra(api, smartContract, currentEra, limitErasPerContract)
     }
     const dAppInfo = maybeDAppInfo.unwrap();
 
-    limitErasPerContract[smartContract] = dAppInfo.state.hasOwnProperty('unregistered') ? dAppInfo.state.unregistered.toInteger() : currentEra;
+    limitErasPerContract[smartContract] = parseInt(dAppInfo.state.isUnregistered ? dAppInfo.state.asUnregistered : currentEra);
   }
 
   return limitErasPerContract[smartContract];
@@ -262,6 +262,7 @@ function getRewardClaimCalls(
     }
   }
 
+  console.log("Staker", stakerAccount, "has", calls.length, "calls for", smartContract.toString());
   return calls;
 };
 
