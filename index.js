@@ -519,7 +519,7 @@ async function main() {
         alias: 't',
         description: 'How much to tip each transaction.',
         default: 0,
-        number: true,
+        string: true,
         demandOption: false,
         global: true
       },
