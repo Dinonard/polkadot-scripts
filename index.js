@@ -369,21 +369,24 @@ async function delegatedClaiming(args) {
     stakerCounter++;
     let stakerCallsCounter = 0;
 
+    let outerCalls = [];
+
     // For each smart contract stake, prepare calls to claim all pending rewards.
     for (const [key, stakerInfo] of stakerInfos) {
       const smartContract = key.args[1];
 
       const limitEra = await getLimitEra(api, smartContract, currentEra, limitErasPerContract);
-
       const innerCalls = getRewardClaimCalls(api, stakerAccount, stakerLedger, smartContract, stakerInfo, limitEra, args.dummy);
-      stakerCallsCounter += innerCalls.length;
 
-      // Only add calls if there are enough unclaimed eras.
-      // This will be used to initially target stakers with large amount of unclaimed eras.
-      if (innerCalls.length > minimumUnclaimedEras) {
-        calls.push(...innerCalls);
-      }
+      stakerCallsCounter += innerCalls.length;
+      outerCalls.push(...innerCalls);
     };
+
+    // Only add calls if there are enough unclaimed eras.
+    // This will be used to initially target stakers with large amount of unclaimed eras.
+    if (outerCalls.length > minimumUnclaimedEras) {
+      calls.push(...outerCalls);
+    }
 
     totalCallsCounter += stakerCallsCounter;
 
