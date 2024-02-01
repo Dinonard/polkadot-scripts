@@ -262,7 +262,6 @@ function getRewardClaimCalls(
     }
   }
 
-  console.log("Staker", stakerAccount, "has", calls.length, "calls for", smartContract.toString());
   return calls;
 };
 
