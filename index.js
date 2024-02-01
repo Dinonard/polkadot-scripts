@@ -214,7 +214,7 @@ function getRewardClaimCalls(
   stakerLedger,
   smartContract,
   stakerInfo,
-  currentEra,
+  limitEra,
   dummyCalls,
 ) {
   let calls = [];
@@ -254,8 +254,8 @@ function getRewardClaimCalls(
     }
 
     // Prepare claim calls for each era in the 'span'.
-    const firstEra = parseInt(stakeEntry.era);
-    const endEra = parseInt((entryIndex == stakerInfo.stakes.length - 1) ? currentEra : stakerInfo.stakes[entryIndex + 1].era);
+    const firstEra = stakeEntry.era.toNumber();
+    const endEra = parseInt((entryIndex == stakerInfo.stakes.length - 1) ? limitEra : stakerInfo.stakes[entryIndex + 1].era);
     for (let i = firstEra; i < endEra; i++) {
       const tx = dummyCalls ? api.tx.dappsStaking.claimStaker(smartContract) : api.tx.dappsStaking.claimStakerFor(stakerAccount, smartContract);
       calls.push(tx);
@@ -370,10 +370,10 @@ async function delegatedClaiming(args) {
     let stakerCallsCounter = 0;
 
     // For each smart contract stake, prepare calls to claim all pending rewards.
-    stakerInfos.forEach(([key, stakerInfo]) => {
+    for (const [key, stakerInfo] of stakerInfos) {
       const smartContract = key.args[1];
 
-      const limitEra = getLimitEra(api, smartContract, currentEra, limitErasPerContract);
+      const limitEra = await getLimitEra(api, smartContract, currentEra, limitErasPerContract);
 
       const innerCalls = getRewardClaimCalls(api, stakerAccount, stakerLedger, smartContract, stakerInfo, limitEra, args.dummy);
       stakerCallsCounter += innerCalls.length;
@@ -383,7 +383,7 @@ async function delegatedClaiming(args) {
       if (innerCalls.length > minimumUnclaimedEras) {
         calls.push(...innerCalls);
       }
-    });
+    };
 
     totalCallsCounter += stakerCallsCounter;
 
@@ -424,6 +424,45 @@ async function delegatedClaiming(args) {
 
   console.log("Delegated claiming finished. Total number of calls:", totalCallsCounter);
 };
+
+/**
+ * Used to check which accounts have remaining unclaimed rewards.
+ * @param {*} args 
+ */
+async function remainingClaimsCheck(args) {
+  console.log("Preparing API...");
+  const api = await connectApi(args.endpoint);
+
+  const currentEra = await api.query.dappsStaking.currentEra();
+  console.log("Current dApps staking v2 era:", currentEra.toString());
+
+  let stakerAccounts = JSON.parse(
+    fs.readFileSync(args.path, "utf8")
+  );
+  console.log("Loaded ", stakerAccounts.length, " staker accounts.");
+
+  const limitErasPerContract = {};
+  let errorCounter = 0;
+
+  const allStakersInfoPromises = stakerAccounts.map(async stakerAccount => {
+    const stakerInfoEntries = await api.query.dappsStaking.generalStakerInfo.entries(stakerAccount);
+    return [stakerAccount, stakerInfoEntries];
+  });
+
+  const allStakersInfoEntries = await Promise.all(allStakersInfoPromises);
+
+  for (const [stakerAccount, stakerInfoEntries] of allStakersInfoEntries) {
+    for (const [key, stakerInfo] of stakerInfos) {
+      const smartContract = key.args[1];
+      const limitEra = await getLimitEra(api, smartContract, currentEra, limitErasPerContract);
+
+      if (limitEra != stakerInfo.stakes[stakerInfo.stakes.length - 1].era.toNumber()) {
+        console.log("Staker", stakerAccount, "has unclaimed rewards on smart contract", smartContract.toString());
+        errorCounter++;
+      }
+    };
+  }
+}
 
 /**
  * This function migrates the dapp staking.
@@ -513,6 +552,22 @@ async function main() {
         });
       },
       getAllStakers
+    )
+    .command(
+      ['check-remaining-stakes'],
+      'Check if there are any remaining stakes to be claimed for v2 staker accounts.',
+      (yargs) => {
+        return yargs.options({
+          path: {
+            alias: 'p',
+            description: 'Path to file from which to load staker accounts.',
+            demandOption: false,
+            string: true,
+            default: 'stakerAccounts.json'
+          }
+        });
+      },
+      remainingClaimsCheck
     )
     .command(
       ['delegated-claim'],
