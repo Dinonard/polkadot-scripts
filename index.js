@@ -324,7 +324,7 @@ async function delegatedClaiming(args) {
   const api = await connectApi(args.endpoint);
 
   console.log("Getting signer account");
-  const signerAccount = await getAccount(api);
+  const signerAccount = getAccount(api);
 
   console.log("Starting with delegated claiming.");
 
@@ -445,26 +445,30 @@ async function remainingClaimsCheck(args) {
   console.log("Loaded ", stakerAccounts.length, " staker accounts.");
 
   const limitErasPerContract = {};
-  let errorCounter = 0;
+  let remainingCalls = 0;
 
   const allStakersInfoPromises = stakerAccounts.map(async stakerAccount => {
-    const stakerInfoEntries = await api.query.dappsStaking.generalStakerInfo.entries(stakerAccount);
-    return [stakerAccount, stakerInfoEntries];
+    const [stakerInfoEntries, ledger] = await Promise.all([
+      api.query.dappsStaking.generalStakerInfo.entries(stakerAccount),
+      api.query.dappsStaking.ledger(stakerAccount)
+    ]);
+    return [stakerAccount, ledger, stakerInfoEntries];
   });
 
   const allStakersInfoEntries = await Promise.all(allStakersInfoPromises);
 
-  for (const [stakerAccount, stakerInfoEntries] of allStakersInfoEntries) {
-    for (const [key, stakerInfo] of stakerInfos) {
+  for (const [stakerAccount, ledger, stakerInfoEntries] of allStakersInfoEntries) {
+    for (const [key, stakerInfo] of stakerInfoEntries) {
       const smartContract = key.args[1];
-      const limitEra = await getLimitEra(api, smartContract, currentEra, limitErasPerContract);
 
-      if (limitEra != stakerInfo.stakes[stakerInfo.stakes.length - 1].era.toNumber()) {
-        console.log("Staker", stakerAccount, "has unclaimed rewards on smart contract", smartContract.toString());
-        errorCounter++;
-      }
+      const limitEra = await getLimitEra(api, smartContract, currentEra, limitErasPerContract);
+      const innerCalls = getRewardClaimCalls(api, stakerAccount, ledger, smartContract, stakerInfo, limitEra, true);
+
+      remainingCalls += innerCalls.length;
     };
   }
+
+  console.log("Total number of remaining calls:", remainingCalls);
 }
 
 /**
@@ -557,7 +561,7 @@ async function main() {
       getAllStakers
     )
     .command(
-      ['check-remaining-stakes'],
+      ['check-remaining-claims'],
       'Check if there are any remaining stakes to be claimed for v2 staker accounts.',
       (yargs) => {
         return yargs.options({
