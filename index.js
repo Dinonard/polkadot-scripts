@@ -28,7 +28,7 @@ async function connectApi(endpoint) {
  *
  * @returns {KeyringPair} A keyring pair representing the created account.
  */
-async function getAccount(api) {
+function getAccount(api) {
   const keyring = new Keyring({
     type: "sr25519",
     ss58Format: api.registry.chainSS58,
