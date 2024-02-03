@@ -460,7 +460,6 @@ async function remainingClaimsCheck(args) {
   for (const [stakerAccount, ledger, stakerInfoEntries] of allStakersInfoEntries) {
     for (const [key, stakerInfo] of stakerInfoEntries) {
       const smartContract = key.args[1];
-      console.log("Smart contract:", smartContract.toJSON());
 
       const limitEra = await getLimitEra(api, smartContract, currentEra, limitErasPerContract);
       const innerCalls = getRewardClaimCalls(api, stakerAccount, ledger, smartContract, stakerInfo, limitEra, true);
