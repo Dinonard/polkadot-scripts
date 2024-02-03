@@ -460,6 +460,7 @@ async function remainingClaimsCheck(args) {
   for (const [stakerAccount, ledger, stakerInfoEntries] of allStakersInfoEntries) {
     for (const [key, stakerInfo] of stakerInfoEntries) {
       const smartContract = key.args[1];
+      console.log("Smart contract:", smartContract.toJSON());
 
       const limitEra = await getLimitEra(api, smartContract, currentEra, limitErasPerContract);
       const innerCalls = getRewardClaimCalls(api, stakerAccount, ledger, smartContract, stakerInfo, limitEra, true);
@@ -469,6 +470,33 @@ async function remainingClaimsCheck(args) {
   }
 
   console.log("Total number of remaining calls:", remainingCalls);
+}
+
+/**
+ * TODO
+ */
+async function claimDappRewards(args) {
+  console.log("Preparing API...");
+  const api = await connectApi(args.endpoint);
+
+  const smartContract = { evm: '0xF87C7872Eff6F01de8efCB328471967b19E302a9' }
+
+  const entries = await api.query.dappsStaking.contractEraStake.entries(smartContract);
+  const currentEra = await api.query.dappsStaking.currentEra();
+
+  let calls = [];
+  for (const [key, dAppStakingInfoOption] of entries) {
+    const era = key.args[1];
+    const dAppStakingInfo = dAppStakingInfoOption.unwrap();
+
+    if (dAppStakingInfo.contractRewardClaimed.isFalse && era.lt(currentEra)) {
+      const tx = api.tx.dappsStaking.claimDapp(smartContract, era);
+      calls.push(tx);
+    }
+  }
+
+  const batchCall = api.tx.utility.batch(calls);
+  console.log("Submitting batch call:", batchCall.toHex());
 }
 
 /**
@@ -575,6 +603,12 @@ async function main() {
         });
       },
       remainingClaimsCheck
+    )
+    .command(
+      ['claim-dapp-rewards'],
+      'dAPp rewards claim',
+      {},
+      claimDappRewards
     )
     .command(
       ['delegated-claim'],
