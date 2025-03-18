@@ -7,7 +7,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@polkadot/api": "^10.4.1",
+    "@polkadot/api": "15.7.2",
     "yargs": "^17.6.0",
     "csv-writer": "^1.6.0"
   }
